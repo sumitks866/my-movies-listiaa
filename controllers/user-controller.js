@@ -13,21 +13,21 @@ const updateMovieCount = async(username, list) => {
     { $inc : query }
   )
 };
-
+/* follower follows following */
 const getFollowers = async(username) => {
   console.log('here');
   let followers = null;
   try {
     followers = await Follow.aggregate([
-      { $match : {following_username : username}},
+      { $match : {following : username}},
       { $project: {
         _id: 0,
-        following_username: 0,
+        following: 0,
         __v: 0,
       }},
       { $lookup :  {
                     from : 'users',
-                    localField: 'username',
+                    localField: 'follower',
                     foreignField: 'username',
                     as: 'followers_details'
                   }
@@ -46,7 +46,7 @@ const getFollowing = async(username) => {
   let following = null;
   try {
     following = await Follow.aggregate([
-      { $match : {username : username}},
+      { $match : { follower : username}},
       { $project: {
         _id: 0,
         username: 0,
@@ -54,7 +54,7 @@ const getFollowing = async(username) => {
       }},
       { $lookup :  {
                     from : 'users',
-                    localField: 'following_username',
+                    localField: 'follower',
                     foreignField: 'username',
                     as: 'following_details'
                   }
@@ -88,7 +88,7 @@ const followersCount = async(username) => {
   let noOfFollowers = 0;
   try {
     const result = await Follow.aggregate([
-      { $match : {following_username : username}},
+      { $match : {following : username}},
       { $count : "followers_count"}
     ]);
     console.log(result);
@@ -106,7 +106,7 @@ const followingCount = async(username) => {
   let noOfFollowing = 0;
   try {
     const result = await Follow.aggregate([
-      { $match : {username : username}},
+      { $match : {follower : username}},
       { $count : "following_count"}
     ]);
     console.log(result);
@@ -145,11 +145,11 @@ const addMovieToUserList = async(user, query, watchObj, list) => {
   } catch(e) {
     throw new Error('Could not add due to internal error');
   }
+  session.endSession();
 };
 
 
 const removeMovieFromUserList = async(query) => {
- 
   const session = await mongoose.startSession();
   
   const transactionOptions = {
@@ -166,10 +166,44 @@ const removeMovieFromUserList = async(query) => {
   }
   try {
     const transactionResults = await session.withTransaction(async () => {
-      const doc = await Watch.findOneAndDelete(query);
-      if(doc) {
-        await User.findOneAndUpdate({username: user.username}, { $inc : list }, {session} );
+      const doc = await Watch.findOneAndDelete(query, {session});
+      if(!doc) {
+        throw new Error('not found');
       }
+      const res = await User.findOneAndUpdate({username: query.username}, { $inc : list }, {session} );
+      if(!res) {
+        throw new Error('not found');
+      }
+    }, transactionOptions);
+
+    if (transactionResults) {
+      console.log("The transaction was successfully created.");
+    } else {
+      console.log("The transaction was intentionally aborted.");
+      throw new Error('Could not remove due to internal error');
+    }
+  } catch(e) {
+    console.log(e);
+    throw new Error('Could not remove due to internal error');
+  }
+  session.endSession();
+};
+
+
+const addFollower = async(followObj) => {
+  const session = await mongoose.startSession();
+  
+  const transactionOptions = {
+    readPreference: 'primary',
+    readConcern: { level: 'local' },
+    writeConcern: { w: 'majority' }
+  };
+  
+  try {
+    const transactionResults = await session.withTransaction( async() => {
+      await Follow.insertMany( [followObj] , {session});
+      await User.findOneAndUpdate({ username: followObj.following }, { $inc : {'followers_count': 1} }, {session} );
+      await User.findOneAndUpdate({ username: followObj.follower }, { $inc : {'following_count': 1} }, {session} );
     }, transactionOptions);
 
     if (transactionResults) {
@@ -179,10 +213,45 @@ const removeMovieFromUserList = async(query) => {
       throw new Error('Could not add due to internal error');
     }
   } catch(e) {
+    console.log(e);
     throw new Error('Could not add due to internal error');
   }
+  session.endSession();
 };
 
+
+const removeFollower = async(followObj) => {
+  const session = await mongoose.startSession();
+  
+  const transactionOptions = {
+    readPreference: 'primary',
+    readConcern: { level: 'local' },
+    writeConcern: { w: 'majority' }
+  };
+  
+  try {
+    const transactionResults = await session.withTransaction( async() => {
+      const doc = await Follow.findOneAndDelete( followObj , {session});
+      console.error(doc);
+      if(doc) {
+        await User.findOneAndUpdate({ username: followObj.following }, { $inc : {'followers_count': -1} }, {session} );
+        await User.findOneAndUpdate({ username: followObj.follower }, { $inc : {'following_count': -1} }, {session} );
+      } else {
+        throw new Error('could not remove following');
+      }
+    }, transactionOptions);
+
+    if (transactionResults) {
+      console.log("The transaction was successfully created.");
+    } else {
+      console.log("The transaction was intentionally aborted.");
+      throw new Error('could not remove following');
+    }
+  } catch(e) {
+    throw new Error('Could not remove due to internal error');
+  }
+  session.endSession();
+};
 
 
 module.exports = {
@@ -194,4 +263,6 @@ module.exports = {
   followingCount,
   addMovieToUserList,
   removeMovieFromUserList,
+  addFollower,
+  removeFollower,
 }
